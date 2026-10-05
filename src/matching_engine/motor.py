@@ -34,7 +34,10 @@ class MotorDeCasamento:
     Regras:
     - Prioridade preço-tempo: melhor preço primeiro; no mesmo preço, quem chegou antes.
     - O negócio sai pelo preço da ordem que já estava no livro (a passiva).
-    - Ordem limitada: executa o que cruzar e o restante fica no livro.
+    - Ordem limitada: executa o que cruzar e o restante fica no livro. Uma limitada com preço
+      que já cruza o livro (ex.: compra acima da melhor venda) é executada, não ignorada:
+      é o que as bolsas fazem, a ordem nunca sai a preço pior que o limite (sai ao preço da
+      passiva) e o livro nunca fica cruzado.
     - Ordem a mercado: executa contra o que houver no livro e o restante é cancelado.
     """
 
@@ -50,6 +53,18 @@ class MotorDeCasamento:
         self._ids_negocio = count(1)
 
     # --- envio e cancelamento -------------------------------------------------------------
+
+    def enviar_ordem(
+        self, tipo: TipoOrdem, lado: Lado, quantidade: int, preco: Decimal | None = None
+    ) -> ResultadoEnvio:
+        """Envia uma ordem de qualquer tipo. O preço é obrigatório só na limitada."""
+        if tipo is TipoOrdem.LIMITE:
+            if preco is None:
+                raise ErroDeOrdem("ordem limitada exige preço")
+            return self.enviar_ordem_limitada(lado, quantidade, preco)
+        if preco is not None:
+            raise ErroDeOrdem("ordem a mercado não aceita preço")
+        return self.enviar_ordem_a_mercado(lado, quantidade)
 
     def enviar_ordem_limitada(self, lado: Lado, quantidade: int, preco: Decimal) -> ResultadoEnvio:
         self._validar_quantidade(quantidade)

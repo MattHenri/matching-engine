@@ -5,31 +5,36 @@ from __future__ import annotations
 from decimal import Decimal, InvalidOperation
 
 from matching_engine.motor import ErroDeOrdem, MotorDeCasamento, ResultadoEnvio
-from matching_engine.ordem import Lado
+from matching_engine.ordem import Lado, Negocio, TipoOrdem
+
+TIPOS = {"limit": TipoOrdem.LIMITE, "market": TipoOrdem.MERCADO}
+LADOS = {"buy": Lado.COMPRA, "sell": Lado.VENDA}
 
 AJUDA = """\
 comandos:
-  compra <qtd> <preço>   ordem limitada de compra
-  venda <qtd> <preço>    ordem limitada de venda
-  compra <qtd>           ordem de compra a mercado
-  venda <qtd>            ordem de venda a mercado
-  cancelar <id>          cancela uma ordem aberta
-  livro                  mostra o livro de ofertas
-  negocios               lista os negócios realizados
-  ajuda                  mostra esta ajuda
-  sair                   encerra"""
+  limit <buy|sell> <price> <qty>   ordem limitada
+  market <buy|sell> <qty>          ordem a mercado
+  cancelar <id>                    cancela uma ordem aberta
+  livro                            mostra o livro de ofertas
+  negocios                         lista os negócios realizados
+  ajuda                            mostra esta ajuda
+  sair                             encerra"""
+
+
+def formatar_negocio(negocio: Negocio) -> str:
+    return f"Trade, price: {negocio.preco}, qty: {negocio.quantidade}"
 
 
 def formatar_livro(motor: MotorDeCasamento) -> str:
     prof = motor.profundidade()
     linhas = [f"livro {motor.ativo}"]
     linhas += [
-        f"  VENDA  {n.preco:>10} {n.quantidade:>8} ({n.ordens})" for n in reversed(prof.vendas)
+        f"  SELL {n.preco:>10} {n.quantidade:>8} ({n.ordens})" for n in reversed(prof.vendas)
     ]
     compra, venda = motor.melhor_compra(), motor.melhor_venda()
     spread = f"spread {venda - compra}" if compra is not None and venda is not None else "spread -"
     linhas.append(f"  {'-' * 10} {spread}")
-    linhas += [f"  COMPRA {n.preco:>10} {n.quantidade:>8} ({n.ordens})" for n in prof.compras]
+    linhas += [f"  BUY  {n.preco:>10} {n.quantidade:>8} ({n.ordens})" for n in prof.compras]
     return "\n".join(linhas)
 
 
@@ -37,20 +42,28 @@ def formatar_negocios(motor: MotorDeCasamento) -> str:
     if not motor.negocios:
         return "nenhum negócio"
     return "\n".join(
-        f"  #{n.id}: {n.quantidade} @ {n.preco} "
-        f"(compra {n.id_ordem_compra}, venda {n.id_ordem_venda}, agressor {n.lado_agressor})"
+        f"  #{n.id} {formatar_negocio(n)} "
+        f"(buy {n.id_ordem_compra}, sell {n.id_ordem_venda}, agressor {n.lado_agressor})"
         for n in motor.negocios
     )
 
 
 def _formatar_resultado(resultado: ResultadoEnvio) -> str:
     o = resultado.ordem
-    linhas = [
-        f"ordem {o.id} ({o.lado}, {o.tipo}): {o.status}, "
-        f"executada {o.quantidade_executada}/{o.quantidade}"
-    ]
-    linhas += [f"  negócio #{n.id}: {n.quantidade} @ {n.preco}" for n in resultado.negocios]
+    linhas = [formatar_negocio(n) for n in resultado.negocios]
+    linhas.append(f"ordem {o.id}: {o.status}, executada {o.quantidade_executada}/{o.quantidade}")
     return "\n".join(linhas)
+
+
+def _enviar(motor: MotorDeCasamento, tipo: TipoOrdem, args: list[str]) -> str:
+    esperados = 3 if tipo is TipoOrdem.LIMITE else 2
+    if len(args) != esperados or args[0].lower() not in LADOS:
+        uso = "limit <buy|sell> <price> <qty>" if esperados == 3 else "market <buy|sell> <qty>"
+        return f"erro: uso: {uso}"
+    lado = LADOS[args[0].lower()]
+    quantidade = int(args[-1])
+    preco = Decimal(args[1].replace(",", ".")) if tipo is TipoOrdem.LIMITE else None
+    return _formatar_resultado(motor.enviar_ordem(tipo, lado, quantidade, preco))
 
 
 def executar_comando(motor: MotorDeCasamento, linha: str) -> str:  # noqa: PLR0911
@@ -60,13 +73,8 @@ def executar_comando(motor: MotorDeCasamento, linha: str) -> str:  # noqa: PLR09
         return ""
     comando, args = partes[0].lower(), partes[1:]
     try:
-        if comando in ("compra", "venda") and len(args) in (1, 2):
-            lado = Lado(comando)
-            quantidade = int(args[0])
-            if len(args) == 1:
-                return _formatar_resultado(motor.enviar_ordem_a_mercado(lado, quantidade))
-            preco = Decimal(args[1].replace(",", "."))
-            return _formatar_resultado(motor.enviar_ordem_limitada(lado, quantidade, preco))
+        if comando in TIPOS:
+            return _enviar(motor, TIPOS[comando], args)
         if comando == "cancelar" and len(args) == 1:
             ordem = motor.cancelar_ordem(int(args[0]))
             return f"ordem {ordem.id} cancelada"

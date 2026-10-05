@@ -3,7 +3,7 @@ from typing import Any
 
 import pytest
 
-from matching_engine import ErroDeOrdem, Lado, MotorDeCasamento, StatusOrdem
+from matching_engine import ErroDeOrdem, Lado, MotorDeCasamento, StatusOrdem, TipoOrdem
 
 C, V = Lado.COMPRA, Lado.VENDA
 
@@ -177,3 +177,26 @@ def test_tick_configuravel() -> None:
     motor.enviar_ordem_limitada(C, 1, D("10.05"))
     with pytest.raises(ErroDeOrdem, match="tick"):
         motor.enviar_ordem_limitada(C, 1, D("10.03"))
+
+
+def test_enviar_ordem_limitada(motor: MotorDeCasamento) -> None:
+    r = motor.enviar_ordem(TipoOrdem.LIMITE, C, 10, D("10.00"))
+    assert r.ordem.tipo is TipoOrdem.LIMITE
+    assert motor.melhor_compra() == D("10.00")
+
+
+def test_enviar_ordem_a_mercado(motor: MotorDeCasamento) -> None:
+    motor.enviar_ordem(TipoOrdem.LIMITE, V, 10, D("10.00"))
+    r = motor.enviar_ordem(TipoOrdem.MERCADO, C, 10)
+    assert r.ordem.tipo is TipoOrdem.MERCADO
+    assert r.negocios[0].quantidade == 10
+
+
+def test_enviar_ordem_limitada_sem_preco(motor: MotorDeCasamento) -> None:
+    with pytest.raises(ErroDeOrdem, match="exige preço"):
+        motor.enviar_ordem(TipoOrdem.LIMITE, C, 10)
+
+
+def test_enviar_ordem_a_mercado_com_preco(motor: MotorDeCasamento) -> None:
+    with pytest.raises(ErroDeOrdem, match="não aceita preço"):
+        motor.enviar_ordem(TipoOrdem.MERCADO, C, 10, D("10.00"))
