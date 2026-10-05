@@ -32,6 +32,20 @@ Motivos:
 
 Esse invariante é verificado por um teste de propriedades (`tests/test_propriedades.py`).
 
+### Alteração de ordem e prioridade
+
+Uma ordem aberta pode ter o preço, a quantidade ou ambos alterados. A quantidade informada é
+a nova quantidade **em aberto** (a que aparece no livro); o que já foi executado não muda.
+
+- **Mudar o preço**: a ordem sai da fila em que estava e entra no **fim** da fila do novo
+  preço, perdendo a prioridade, como se tivesse acabado de chegar.
+- **Aumentar a quantidade**: também perde a prioridade. Se não perdesse, bastaria colocar uma
+  ordem pequena cedo e aumentá-la depois para passar na frente de quem chegou antes.
+- **Reduzir a quantidade**: mantém a posição na fila, porque não prejudica ninguém.
+- Se o novo preço cruzar o livro, a ordem executa, pela mesma regra da limit nova.
+
+É a regra usada pela B3 e pela maioria das bolsas.
+
 ## Uso
 
 ```bash
@@ -39,57 +53,83 @@ uv sync
 uv run matching-engine
 ```
 
-Entrada:
+Comandos:
 
 ```
-limit <buy|sell> <price> <qty>
-market <buy|sell> <qty>
+limit <buy|sell> <price> <qty>                  ordem limitada
+market <buy|sell> <qty>                         ordem a mercado
+cancel order <id>                               cancela uma ordem aberta
+change order <id> [price <price>] [qty <qty>]   altera preço, quantidade ou ambos
+book                                            mostra o livro
+trades                                          lista os negócios realizados
+help / exit
 ```
 
-Cada negócio realizado gera uma linha `Trade, price: <preço>, qty: <quantidade>`, seguida do
-estado da ordem enviada (o id serve para `cancelar <id>`):
+O `<id>` pode ser escrito como `identificador_1` ou só `1`. Cada negócio gera uma linha
+`Trade, price: <preço>, qty: <quantidade>`.
 
 ```
-> limit buy 10 100
-ordem 1: aberta, executada 0/100
-> limit buy 10 200
-ordem 2: aberta, executada 0/200
-> limit sell 20 100
-ordem 3: aberta, executada 0/100
-> market sell 150
-Trade, price: 10, qty: 100
-Trade, price: 10, qty: 50
-ordem 4: executada, executada 150/150
-> limit buy 25 150
-Trade, price: 20, qty: 100
-ordem 5: parcialmente_executada, executada 100/150
-> livro
-livro ATIVO
-  ---------- spread -
-  BUY          25       50 (1)
-  BUY          10      150 (1)
+>>> limit buy 10 100
+Order created: buy 100 @ 10 identificador_1
+>>> cancel order identificador_1
+Order cancelled
+>>> limit buy 10 200
+Order created: buy 200 @ 10 identificador_2
+>>> limit buy 9.99 100
+Order created: buy 100 @ 9.99 identificador_3
+>>> limit sell 10.5 100
+Order created: sell 100 @ 10.5 identificador_4
+>>> book
+Ordens de Compra    | Ordens de Venda
+--------------------|-----------------
+200 @ 10            | 100 @ 10.5
+100 @ 9.99          |
+>>> change order identificador_2 price 9.98
+Order changed: buy 200 @ 9.98 identificador_2
+>>> book
+Ordens de Compra    | Ordens de Venda
+--------------------|-----------------
+100 @ 9.99          | 100 @ 10.5
+200 @ 9.98          |
+>>> limit sell 20 100
+Order created: sell 100 @ 20 identificador_5
+>>> limit sell 20 200
+Order created: sell 200 @ 20 identificador_6
+>>> market buy 150
+Order created: buy 150 @ market identificador_7
+Trade, price: 10.5, qty: 100
+Trade, price: 20, qty: 50
+>>> book
+Ordens de Compra    | Ordens de Venda
+--------------------|-----------------
+100 @ 9.99          | 50 @ 20
+200 @ 9.98          | 200 @ 20
 ```
 
-Outros comandos: `cancelar <id>`, `livro`, `negocios`, `ajuda`, `sair`.
+No `market buy 150`, a venda a 10.5 executa primeiro por ter o melhor preço, e entre as duas
+vendas a 20 a ordem 5 (que chegou antes) é preenchida antes da ordem 6.
 
 Como biblioteca:
 
 ```python
 from decimal import Decimal
-from matching_engine import Lado, MotorDeCasamento, TipoOrdem
+from matching_engine import Lado, MotorDeCasamento, TipoOrdem, visualizar_livro
 
 motor = MotorDeCasamento(ativo="PETR4")
-motor.enviar_ordem(TipoOrdem.LIMITE, Lado.VENDA, 100, Decimal("38.50"))
+venda = motor.enviar_ordem(TipoOrdem.LIMITE, Lado.VENDA, 100, Decimal("38.50")).ordem
 resultado = motor.enviar_ordem(TipoOrdem.MERCADO, Lado.COMPRA, 40)
 print(resultado.negocios)
-print(motor.profundidade())
+motor.alterar_ordem(venda.id, preco=Decimal("38.40"), quantidade=80)
+print(visualizar_livro(motor))
+motor.cancelar_ordem(venda.id)
 ```
 
 ## Estrutura
 
 - `ordem.py`: `Lado`, `Ordem`, `Negocio` e status.
 - `livro.py`: livro de ofertas; níveis de preço ordenados, cada um com uma fila FIFO.
-- `motor.py`: validação, casamento e cancelamento.
+- `motor.py`: validação, casamento, alteração e cancelamento.
+- `visualizacao.py`: `visualizar_livro`, o livro em duas colunas, uma ordem por linha.
 - `cli.py`: terminal interativo.
 
 ## Desenvolvimento

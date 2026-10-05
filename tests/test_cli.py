@@ -2,65 +2,129 @@ from matching_engine import MotorDeCasamento
 from matching_engine.cli import executar_comando
 
 
-def test_fluxo_basico() -> None:
+def rodar(motor: MotorDeCasamento, linha: str) -> list[str]:
+    return executar_comando(motor, linha).splitlines()
+
+
+def test_criar_e_cancelar_exemplo_do_enunciado() -> None:
     motor = MotorDeCasamento(ativo="TESTE")
+    assert rodar(motor, "limit buy 10 100") == ["Order created: buy 100 @ 10 identificador_1"]
+    assert rodar(motor, "cancel order identificador_1") == ["Order cancelled"]
+    assert motor.melhor_compra() is None
 
-    assert executar_comando(motor, "limit sell 10,50 100") == "ordem 1: aberta, executada 0/100"
-    assert executar_comando(motor, "limit buy 10.40 50") == "ordem 2: aberta, executada 0/50"
 
-    livro = executar_comando(motor, "livro")
-    assert "SELL" in livro
-    assert "BUY" in livro
-    assert "spread 0.10" in livro
+def test_cancelar_pelo_numero() -> None:
+    motor = MotorDeCasamento(ativo="TESTE")
+    rodar(motor, "limit sell 10 100")
+    assert rodar(motor, "cancel order 1") == ["Order cancelled"]
 
-    assert executar_comando(motor, "market buy 30").splitlines() == [
-        "Trade, price: 10.50, qty: 30",
-        "ordem 3: executada, executada 30/30",
+
+def test_trades_respeitam_a_ordem_de_chegada() -> None:
+    motor = MotorDeCasamento(ativo="TESTE")
+    rodar(motor, "limit sell 20 100")
+    rodar(motor, "limit sell 20 200")
+
+    assert rodar(motor, "market buy 150") == [
+        "Order created: buy 150 @ market identificador_3",
+        "Trade, price: 20, qty: 100",
+        "Trade, price: 20, qty: 50",
     ]
 
-    assert "cancelada" in executar_comando(motor, "cancelar 2")
-    assert "#1 Trade, price: 10.50, qty: 30" in executar_comando(motor, "negocios")
 
-
-def test_uma_linha_por_trade() -> None:
+def test_market_sem_contraparte_suficiente() -> None:
     motor = MotorDeCasamento(ativo="TESTE")
-    executar_comando(motor, "limit buy 10 100")
-    executar_comando(motor, "limit buy 10 200")
-    executar_comando(motor, "limit buy 9 50")
+    rodar(motor, "limit buy 10 100")
 
-    assert executar_comando(motor, "market sell 320").splitlines() == [
+    assert rodar(motor, "market sell 130") == [
+        "Order created: sell 130 @ market identificador_2",
         "Trade, price: 10, qty: 100",
-        "Trade, price: 10, qty: 200",
-        "Trade, price: 9, qty: 20",
-        "ordem 4: executada, executada 320/320",
+        "Order cancelled: qty 30 sem contraparte",
     ]
 
 
 def test_limit_que_cruza_e_executada() -> None:
     motor = MotorDeCasamento(ativo="TESTE")
-    executar_comando(motor, "limit sell 20 100")
+    rodar(motor, "limit sell 20 100")
 
-    assert executar_comando(motor, "limit buy 25 150").splitlines() == [
+    assert rodar(motor, "limit buy 25 150") == [
+        "Order created: buy 150 @ 25 identificador_2",
         "Trade, price: 20, qty: 100",
-        "ordem 2: parcialmente_executada, executada 100/150",
     ]
     assert motor.melhor_compra() == 25
 
 
+def test_alterar_exemplo_do_enunciado() -> None:
+    motor = MotorDeCasamento(ativo="TESTE")
+    rodar(motor, "limit buy 10 200")
+    rodar(motor, "limit buy 9.99 100")
+    rodar(motor, "limit sell 10.5 100")
+
+    assert rodar(motor, "change order identificador_1 price 9.98") == [
+        "Order changed: buy 200 @ 9.98 identificador_1"
+    ]
+    assert rodar(motor, "book")[2:] == [
+        "100 @ 9.99          | 100 @ 10.5",
+        "200 @ 9.98          |",
+    ]
+
+
+def test_alterar_quantidade_e_preco_em_qualquer_ordem() -> None:
+    motor = MotorDeCasamento(ativo="TESTE")
+    rodar(motor, "limit buy 10 200")
+    assert rodar(motor, "change order 1 qty 50") == ["Order changed: buy 50 @ 10 identificador_1"]
+    assert rodar(motor, "change order 1 qty 70 price 11") == [
+        "Order changed: buy 70 @ 11 identificador_1"
+    ]
+
+
+def test_alterar_preco_que_cruza_mostra_os_trades() -> None:
+    motor = MotorDeCasamento(ativo="TESTE")
+    rodar(motor, "limit sell 20 30")
+    rodar(motor, "limit buy 10 100")
+
+    assert rodar(motor, "change order 2 price 21") == [
+        "Order changed: buy 100 @ 21 identificador_2",
+        "Trade, price: 20, qty: 30",
+    ]
+    assert rodar(motor, "book")[2:] == ["70 @ 21             |"]
+
+
+def test_trades_e_aliases() -> None:
+    motor = MotorDeCasamento(ativo="TESTE")
+    assert rodar(motor, "trades") == ["nenhum negócio"]
+    rodar(motor, "limit sell 20 30")
+    rodar(motor, "market buy 10")
+    assert rodar(motor, "negocios") == [
+        "  #1 Trade, price: 20, qty: 10 (buy identificador_2, sell identificador_1, agressor buy)"
+    ]
+    assert rodar(motor, "livro") == rodar(motor, "book")
+    assert rodar(motor, "ajuda") == rodar(motor, "help")
+
+
 def test_maiusculas() -> None:
     motor = MotorDeCasamento(ativo="TESTE")
-    assert "aberta" in executar_comando(motor, "LIMIT BUY 10 5")
+    assert rodar(motor, "LIMIT BUY 10 5") == ["Order created: buy 5 @ 10 identificador_1"]
 
 
 def test_erros() -> None:
     motor = MotorDeCasamento(ativo="TESTE")
-    assert executar_comando(motor, "limit buy abc 10") == "erro: número inválido"
-    assert executar_comando(motor, "limit buy 10 1.5") == "erro: número inválido"
+    erros = {
+        "limit buy abc 10": "erro: número inválido",
+        "limit buy 10 1.5": "erro: número inválido",
+        "limit buy 10": "erro: uso: limit <buy|sell> <price> <qty>",
+        "market buy 10 10": "erro: uso: market <buy|sell> <qty>",
+        "market hold 10": "erro: uso: market <buy|sell> <qty>",
+        "market buy 0": "erro: quantidade deve ser positiva",
+        "cancel order 7": "erro: ordem 7 não existe",
+        "cancel 7": "erro: uso: cancel order <id>",
+        "cancel order identificador_x": "erro: número inválido",
+        "change order 1": "erro: uso: change order <id> [price <price>] [qty <qty>]",
+        "change order 1 size 10": "erro: uso: change order <id> [price <price>] [qty <qty>]",
+        "change order 1 qty 1 qty 2": "erro: uso: change order <id> [price <price>] [qty <qty>]",
+        "change order 7 qty 10": "erro: ordem 7 não existe",
+        "xyz": "comando não reconhecido: 'xyz' (digite 'help')",
+        "   ": "",
+    }
+    for linha, esperado in erros.items():
+        assert executar_comando(motor, linha) == esperado, linha
     assert executar_comando(motor, "limit buy 10.001 10").startswith("erro: preço")
-    assert executar_comando(motor, "limit buy 10") == "erro: uso: limit <buy|sell> <price> <qty>"
-    assert executar_comando(motor, "market buy 10 10") == "erro: uso: market <buy|sell> <qty>"
-    assert executar_comando(motor, "market hold 10") == "erro: uso: market <buy|sell> <qty>"
-    assert executar_comando(motor, "market buy 0") == "erro: quantidade deve ser positiva"
-    assert executar_comando(motor, "cancelar 7") == "erro: ordem 7 não existe"
-    assert executar_comando(motor, "xyz").startswith("comando não reconhecido")
-    assert executar_comando(motor, "   ") == ""

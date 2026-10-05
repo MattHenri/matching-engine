@@ -32,8 +32,8 @@ class StatusOrdem(StrEnum):
 class Ordem:
     """Ordem enviada ao motor.
 
-    O `id` é sequencial e também define a prioridade de tempo: entre ordens do mesmo preço,
-    a de menor `id` chegou antes e é executada primeiro.
+    O `id` é sequencial e não muda. A prioridade de tempo é a posição na fila do nível de
+    preço: em geral segue o `id`, mas uma ordem alterada pode ir para o fim da fila.
     """
 
     id: int

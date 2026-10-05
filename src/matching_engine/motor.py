@@ -11,13 +11,22 @@ from matching_engine.ordem import Lado, Negocio, Ordem, TipoOrdem
 
 
 class ErroDeOrdem(ValueError):
-    """Ordem ou cancelamento rejeitado pelo motor."""
+    """Ordem, alteração ou cancelamento rejeitado pelo motor."""
 
 
 @dataclass(frozen=True, slots=True)
 class ResultadoEnvio:
     ordem: Ordem
     negocios: tuple[Negocio, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class OrdemNoLivro:
+    """Foto de uma ordem parada no livro."""
+
+    id: int
+    preco: Decimal
+    quantidade: int  # em aberto
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +48,7 @@ class MotorDeCasamento:
       é o que as bolsas fazem, a ordem nunca sai a preço pior que o limite (sai ao preço da
       passiva) e o livro nunca fica cruzado.
     - Ordem a mercado: executa contra o que houver no livro e o restante é cancelado.
+    - Alteração de preço ou aumento de quantidade faz a ordem perder a prioridade.
     """
 
     def __init__(self, ativo: str, tick: Decimal = Decimal("0.01")) -> None:
@@ -86,16 +96,58 @@ class MotorDeCasamento:
         return ResultadoEnvio(ordem, negocios)
 
     def cancelar_ordem(self, id_ordem: int) -> Ordem:
-        ordem = self._ordens.get(id_ordem)
-        if ordem is None:
-            raise ErroDeOrdem(f"ordem {id_ordem} não existe")
+        ordem, preco = self._ordem_aberta(id_ordem)
+        self._livro.lado(ordem.lado).remover(ordem, preco)
+        ordem.cancelada = True
+        return ordem
+
+    def alterar_ordem(
+        self, id_ordem: int, *, preco: Decimal | None = None, quantidade: int | None = None
+    ) -> ResultadoEnvio:
+        """Altera preço, quantidade ou ambos de uma ordem aberta.
+
+        `quantidade` é a nova quantidade em aberto (o que aparece no livro); o que já foi
+        executado não muda.
+
+        Prioridade (mesma regra da B3 e da maioria das bolsas):
+        - mudar o preço ou aumentar a quantidade faz a ordem perder a prioridade: ela vai para
+          o fim da fila do novo preço, como se tivesse acabado de chegar;
+        - só reduzir a quantidade mantém a posição na fila, porque não prejudica ninguém.
+
+        Se o novo preço cruzar o livro, a ordem executa, como uma limitada nova.
+        """
+        if preco is None and quantidade is None:
+            raise ErroDeOrdem("informe o novo preço, a nova quantidade ou ambos")
+        if preco is not None:
+            self._validar_preco(preco)
+        if quantidade is not None:
+            self._validar_quantidade(quantidade)
+        ordem, preco_atual = self._ordem_aberta(id_ordem)
+
+        novo_preco = preco_atual if preco is None else preco
+        nova_restante = ordem.quantidade_restante if quantidade is None else quantidade
+        perde_prioridade = novo_preco != preco_atual or nova_restante > ordem.quantidade_restante
+
+        if not perde_prioridade:
+            ordem.quantidade = ordem.quantidade_executada + nova_restante
+            return ResultadoEnvio(ordem, ())
+
+        lado_do_livro = self._livro.lado(ordem.lado)
+        lado_do_livro.remover(ordem, preco_atual)
+        ordem.preco = novo_preco
+        ordem.quantidade = ordem.quantidade_executada + nova_restante
+        negocios = self._casar(ordem)
+        if ordem.quantidade_restante > 0:
+            lado_do_livro.adicionar(ordem, novo_preco)
+        return ResultadoEnvio(ordem, negocios)
+
+    def _ordem_aberta(self, id_ordem: int) -> tuple[Ordem, Decimal]:
+        ordem = self.ordem(id_ordem)
         if ordem.quantidade_restante == 0:
             raise ErroDeOrdem(f"ordem {id_ordem} não está aberta ({ordem.status})")
         # Só ordens limitadas ficam abertas, então o preço existe.
         assert ordem.preco is not None
-        self._livro.lado(ordem.lado).remover(ordem, ordem.preco)
-        ordem.cancelada = True
-        return ordem
+        return ordem, ordem.preco
 
     # --- consultas ------------------------------------------------------------------------
 
@@ -104,6 +156,14 @@ class MotorDeCasamento:
             return self._ordens[id_ordem]
         except KeyError:
             raise ErroDeOrdem(f"ordem {id_ordem} não existe") from None
+
+    def ordens_no_livro(self, lado: Lado) -> tuple[OrdemNoLivro, ...]:
+        """Ordens abertas de um lado, na ordem em que seriam executadas."""
+        return tuple(
+            OrdemNoLivro(o.id, o.preco, o.quantidade_restante)
+            for o in self._livro.lado(lado).ordens()
+            if o.preco is not None
+        )
 
     def profundidade(self) -> Profundidade:
         return Profundidade(

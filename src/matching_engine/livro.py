@@ -67,6 +67,10 @@ class LadoDoLivro:
         del self._niveis[preco]
         self._precos.remove(preco)
 
+    def ordens(self) -> list[Ordem]:
+        """Todas as ordens, do melhor preço para o pior e, em cada preço, por chegada."""
+        return [ordem for preco in self._precos for ordem in self._niveis[preco]]
+
     def niveis(self) -> list[NivelDePreco]:
         return [
             NivelDePreco(

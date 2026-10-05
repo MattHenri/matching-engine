@@ -200,3 +200,137 @@ def test_enviar_ordem_limitada_sem_preco(motor: MotorDeCasamento) -> None:
 def test_enviar_ordem_a_mercado_com_preco(motor: MotorDeCasamento) -> None:
     with pytest.raises(ErroDeOrdem, match="não aceita preço"):
         motor.enviar_ordem(TipoOrdem.MERCADO, C, 10, D("10.00"))
+
+
+# --- ordens no livro ---------------------------------------------------------------------
+
+
+def test_ordens_no_livro_por_preco_e_chegada(motor: MotorDeCasamento) -> None:
+    a = motor.enviar_ordem_limitada(C, 10, D("9.99")).ordem
+    b = motor.enviar_ordem_limitada(C, 20, D("10.00")).ordem
+    c = motor.enviar_ordem_limitada(C, 30, D("10.00")).ordem
+    motor.enviar_ordem_limitada(V, 5, D("10.00"))  # executa 5 da ordem b
+
+    assert [(o.id, o.preco, o.quantidade) for o in motor.ordens_no_livro(C)] == [
+        (b.id, D("10.00"), 15),
+        (c.id, D("10.00"), 30),
+        (a.id, D("9.99"), 10),
+    ]
+    assert motor.ordens_no_livro(V) == ()
+
+
+# --- alteração ---------------------------------------------------------------------------
+
+
+def _livro_compra(motor: MotorDeCasamento) -> list[tuple[int, Decimal]]:
+    return [(o.quantidade, o.preco) for o in motor.ordens_no_livro(C)]
+
+
+def test_alterar_preco_reposiciona_e_perde_prioridade(motor: MotorDeCasamento) -> None:
+    # Exemplo do enunciado.
+    primeira = motor.enviar_ordem_limitada(C, 200, D("10")).ordem
+    motor.enviar_ordem_limitada(C, 100, D("9.99"))
+    motor.enviar_ordem_limitada(V, 100, D("10.5"))
+
+    r = motor.alterar_ordem(primeira.id, preco=D("9.98"))
+
+    assert r.negocios == ()
+    assert _livro_compra(motor) == [(100, D("9.99")), (200, D("9.98"))]
+    assert [(o.quantidade, o.preco) for o in motor.ordens_no_livro(V)] == [(100, D("10.5"))]
+
+
+def test_alterar_preco_para_nivel_existente_vai_para_o_fim_da_fila(
+    motor: MotorDeCasamento,
+) -> None:
+    a = motor.enviar_ordem_limitada(C, 10, D("10.00")).ordem
+    b = motor.enviar_ordem_limitada(C, 20, D("10.01")).ordem
+    motor.alterar_ordem(b.id, preco=D("10.00"))
+
+    assert [o.id for o in motor.ordens_no_livro(C)] == [a.id, b.id]
+
+
+def test_aumentar_quantidade_perde_prioridade(motor: MotorDeCasamento) -> None:
+    a = motor.enviar_ordem_limitada(C, 10, D("10.00")).ordem
+    b = motor.enviar_ordem_limitada(C, 10, D("10.00")).ordem
+    motor.alterar_ordem(a.id, quantidade=50)
+
+    assert [(o.id, o.quantidade) for o in motor.ordens_no_livro(C)] == [(b.id, 10), (a.id, 50)]
+
+
+def test_reduzir_quantidade_mantem_prioridade(motor: MotorDeCasamento) -> None:
+    a = motor.enviar_ordem_limitada(C, 50, D("10.00")).ordem
+    b = motor.enviar_ordem_limitada(C, 10, D("10.00")).ordem
+    motor.alterar_ordem(a.id, quantidade=5)
+
+    assert [(o.id, o.quantidade) for o in motor.ordens_no_livro(C)] == [(a.id, 5), (b.id, 10)]
+
+
+def test_alterar_para_os_mesmos_valores_mantem_prioridade(motor: MotorDeCasamento) -> None:
+    a = motor.enviar_ordem_limitada(C, 10, D("10.00")).ordem
+    b = motor.enviar_ordem_limitada(C, 10, D("10.00")).ordem
+    motor.alterar_ordem(a.id, preco=D("10.00"), quantidade=10)
+
+    assert [o.id for o in motor.ordens_no_livro(C)] == [a.id, b.id]
+
+
+def test_alterar_preco_e_quantidade(motor: MotorDeCasamento) -> None:
+    a = motor.enviar_ordem_limitada(V, 10, D("10.50")).ordem
+    motor.alterar_ordem(a.id, preco=D("10.40"), quantidade=30)
+
+    assert [(o.quantidade, o.preco) for o in motor.ordens_no_livro(V)] == [(30, D("10.40"))]
+    assert a.quantidade == 30
+
+
+def test_alterar_preco_que_cruza_executa(motor: MotorDeCasamento) -> None:
+    venda = motor.enviar_ordem_limitada(V, 30, D("10.50")).ordem
+    compra = motor.enviar_ordem_limitada(C, 100, D("10.00")).ordem
+
+    r = motor.alterar_ordem(compra.id, preco=D("10.60"))
+
+    (negocio,) = r.negocios
+    assert (negocio.preco, negocio.quantidade) == (D("10.50"), 30)
+    assert negocio.id_ordem_compra == compra.id
+    assert negocio.id_ordem_venda == venda.id
+    assert negocio.lado_agressor is C
+    assert _livro_compra(motor) == [(70, D("10.60"))]
+    assert motor.melhor_venda() is None
+
+
+def test_alterar_quantidade_de_ordem_parcialmente_executada(motor: MotorDeCasamento) -> None:
+    compra = motor.enviar_ordem_limitada(C, 100, D("10.00")).ordem
+    motor.enviar_ordem_a_mercado(V, 40)
+
+    motor.alterar_ordem(compra.id, quantidade=20)  # 20 em aberto, além dos 40 executados
+
+    assert compra.quantidade_executada == 40
+    assert compra.quantidade == 60
+    assert compra.quantidade_restante == 20
+    assert _livro_compra(motor) == [(20, D("10.00"))]
+
+
+def test_alterar_sem_preco_nem_quantidade(motor: MotorDeCasamento) -> None:
+    a = motor.enviar_ordem_limitada(C, 10, D("10.00")).ordem
+    with pytest.raises(ErroDeOrdem, match="informe"):
+        motor.alterar_ordem(a.id)
+
+
+def test_alterar_ordem_inexistente(motor: MotorDeCasamento) -> None:
+    with pytest.raises(ErroDeOrdem, match="não existe"):
+        motor.alterar_ordem(99, preco=D("10.00"))
+
+
+def test_alterar_ordem_cancelada(motor: MotorDeCasamento) -> None:
+    a = motor.enviar_ordem_limitada(C, 10, D("10.00")).ordem
+    motor.cancelar_ordem(a.id)
+    with pytest.raises(ErroDeOrdem, match="não está aberta"):
+        motor.alterar_ordem(a.id, quantidade=5)
+
+
+def test_alterar_com_valores_invalidos_nao_muda_nada(motor: MotorDeCasamento) -> None:
+    a = motor.enviar_ordem_limitada(C, 10, D("10.00")).ordem
+    with pytest.raises(ErroDeOrdem):
+        motor.alterar_ordem(a.id, preco=D("10.001"))
+    with pytest.raises(ErroDeOrdem):
+        motor.alterar_ordem(a.id, preco=D("9.00"), quantidade=0)
+
+    assert _livro_compra(motor) == [(10, D("10.00"))]
