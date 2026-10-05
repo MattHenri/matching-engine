@@ -3,6 +3,8 @@ name = "matching-engine"
 version = "0.1.0"
 description = "Matching engine simples, em memória, para um único ativo, com prioridade preço-tempo."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "Mateus Henrique" }]
 requires-python = ">=3.12"
 dependencies = []
