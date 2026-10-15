@@ -97,12 +97,6 @@ uv run ruff format .
 uv run mypy
 ```
 
-## Próximos passos
-
-- Ordens com validade (ex.: IOC e FOK) e alteração de preço/quantidade.
-- Vários ativos, cada um com seu livro.
-- Benchmark de throughput (ordens por segundo).
-
 ## Licença
 
 [MIT](LICENSE)
