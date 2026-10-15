@@ -5,11 +5,12 @@ from __future__ import annotations
 from decimal import Decimal, InvalidOperation
 
 from matching_engine.motor import ErroDeOrdem, MotorDeCasamento
-from matching_engine.ordem import Lado, Negocio, Ordem, TipoOrdem
+from matching_engine.ordem import Lado, Negocio, Ordem, Referencia, TipoOrdem
 from matching_engine.visualizacao import visualizar_livro
 
 TIPOS = {"limit": TipoOrdem.LIMITE, "market": TipoOrdem.MERCADO}
 LADOS = {"buy": Lado.COMPRA, "sell": Lado.VENDA}
+REFERENCIAS = {"bid": Referencia.BID, "offer": Referencia.OFFER}
 NOMES_LADO = {Lado.COMPRA: "buy", Lado.VENDA: "sell"}
 PREFIXO_ID = "identificador_"
 
@@ -17,18 +18,21 @@ AJUDA = """\
 comandos:
   limit <buy|sell> <price> <qty>                     ordem limitada
   market <buy|sell> <qty>                            ordem a mercado
+  peg bid buy <qty>                                  compra que acompanha o bid
+  peg offer sell <qty>                               venda que acompanha o offer
   cancel order <id>                                  cancela uma ordem aberta
   change order <id> [price <price>] [qty <qty>]      altera preço, quantidade ou ambos
-  book                                               mostra o livro de ofertas
+  book (ou print book)                               mostra o livro de ofertas
   trades                                             lista os negócios realizados
   help                                               mostra esta ajuda
   exit                                               encerra
 
 <id> pode ser escrito como identificador_1 ou só 1.
-Em change, qty é a nova quantidade em aberto."""
+Em change, qty é a nova quantidade em aberto. Ordens peg só aceitam change de qty."""
 
 USO_LIMIT = "erro: uso: limit <buy|sell> <price> <qty>"
 USO_MARKET = "erro: uso: market <buy|sell> <qty>"
+USO_PEG = "erro: uso: peg <bid|offer> <buy|sell> <qty>"
 USO_CANCEL = "erro: uso: cancel order <id>"
 USO_CHANGE = "erro: uso: change order <id> [price <price>] [qty <qty>]"
 
@@ -50,7 +54,9 @@ def formatar_negocio(negocio: Negocio) -> str:
 
 
 def _formatar_ordem(ordem: Ordem, quantidade: int) -> str:
-    preco = "market" if ordem.preco is None else ordem.preco
+    preco = "market" if ordem.preco is None else str(ordem.preco)
+    if ordem.referencia is not None:
+        preco += f" (peg {ordem.referencia})"
     return f"{NOMES_LADO[ordem.lado]} {quantidade} @ {preco} {formatar_id(ordem.id)}"
 
 
@@ -80,6 +86,14 @@ def _enviar(motor: MotorDeCasamento, tipo: TipoOrdem, args: list[str]) -> str:
         sobra = ordem.quantidade - ordem.quantidade_executada
         linhas.append(f"Order cancelled: qty {sobra} sem contraparte")
     return "\n".join(linhas)
+
+
+def _enviar_pegged(motor: MotorDeCasamento, args: list[str]) -> str:
+    if len(args) != 3 or args[0].lower() not in REFERENCIAS or args[1].lower() not in LADOS:
+        return USO_PEG
+    referencia, lado = REFERENCIAS[args[0].lower()], LADOS[args[1].lower()]
+    resultado = motor.enviar_ordem_pegged(referencia, lado, int(args[2]))
+    return f"Order created: {_formatar_ordem(resultado.ordem, resultado.ordem.quantidade)}"
 
 
 def _cancelar(motor: MotorDeCasamento, args: list[str]) -> str:
@@ -112,18 +126,22 @@ def _alterar(motor: MotorDeCasamento, args: list[str]) -> str:
 
 def executar_comando(motor: MotorDeCasamento, linha: str) -> str:  # noqa: PLR0911
     """Interpreta uma linha de comando e devolve o texto da resposta."""
-    partes = linha.lstrip("﻿").split()  # BOM que o pipe do PowerShell envia
+    partes = linha.lstrip("\ufeff").split()  # BOM que o pipe do PowerShell envia
     if not partes:
         return ""
     comando, args = partes[0].lower(), partes[1:]
     try:
         if comando in TIPOS:
             return _enviar(motor, TIPOS[comando], args)
+        if comando == "peg":
+            return _enviar_pegged(motor, args)
         if comando == "cancel":
             return _cancelar(motor, args)
         if comando == "change":
             return _alterar(motor, args)
-        if comando in ("book", "livro") and not args:
+        if (comando in ("book", "livro") and not args) or (
+            comando == "print" and [a.lower() for a in args] == ["book"]
+        ):
             return visualizar_livro(motor)
         if comando in ("trades", "negocios") and not args:
             return formatar_negocios(motor)

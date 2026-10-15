@@ -7,7 +7,7 @@ from decimal import Decimal
 from itertools import count
 
 from matching_engine.livro import LivroDeOfertas, NivelDePreco
-from matching_engine.ordem import Lado, Negocio, Ordem, TipoOrdem
+from matching_engine.ordem import Lado, Negocio, Ordem, Referencia, TipoOrdem
 
 
 class ErroDeOrdem(ValueError):
@@ -27,6 +27,7 @@ class OrdemNoLivro:
     id: int
     preco: Decimal
     quantidade: int  # em aberto
+    referencia: Referencia | None = None  # só nas pegged
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +49,7 @@ class MotorDeCasamento:
       é o que as bolsas fazem, a ordem nunca sai a preço pior que o limite (sai ao preço da
       passiva) e o livro nunca fica cruzado.
     - Ordem a mercado: executa contra o que houver no livro e o restante é cancelado.
+    - Ordem pegged: acompanha o bid (compra) ou o offer (venda); ver `enviar_ordem_pegged`.
     - Alteração de preço ou aumento de quantidade faz a ordem perder a prioridade.
     """
 
@@ -61,44 +63,85 @@ class MotorDeCasamento:
         self._negocios: list[Negocio] = []
         self._ids_ordem = count(1)
         self._ids_negocio = count(1)
+        self._prioridades = count(1)
 
     # --- envio e cancelamento -------------------------------------------------------------
 
     def enviar_ordem(
-        self, tipo: TipoOrdem, lado: Lado, quantidade: int, preco: Decimal | None = None
+        self,
+        tipo: TipoOrdem,
+        lado: Lado,
+        quantidade: int,
+        preco: Decimal | None = None,
+        referencia: Referencia | None = None,
     ) -> ResultadoEnvio:
-        """Envia uma ordem de qualquer tipo. O preço é obrigatório só na limitada."""
+        """Envia uma ordem de qualquer tipo.
+
+        O preço é obrigatório só na limitada; a referência, só na pegged.
+        """
+        if tipo is not TipoOrdem.LIMITE and preco is not None:
+            raise ErroDeOrdem(f"ordem {tipo} não aceita preço")
+        if tipo is not TipoOrdem.PEGGED and referencia is not None:
+            raise ErroDeOrdem(f"ordem {tipo} não aceita referência")
         if tipo is TipoOrdem.LIMITE:
             if preco is None:
                 raise ErroDeOrdem("ordem limitada exige preço")
             return self.enviar_ordem_limitada(lado, quantidade, preco)
-        if preco is not None:
-            raise ErroDeOrdem("ordem a mercado não aceita preço")
+        if tipo is TipoOrdem.PEGGED:
+            if referencia is None:
+                raise ErroDeOrdem("ordem pegged exige referência (bid ou offer)")
+            return self.enviar_ordem_pegged(referencia, lado, quantidade)
         return self.enviar_ordem_a_mercado(lado, quantidade)
 
     def enviar_ordem_limitada(self, lado: Lado, quantidade: int, preco: Decimal) -> ResultadoEnvio:
         self._validar_quantidade(quantidade)
         self._validar_preco(preco)
-        ordem = Ordem(next(self._ids_ordem), lado, TipoOrdem.LIMITE, quantidade, preco)
-        self._ordens[ordem.id] = ordem
+        ordem = self._nova_ordem(lado, TipoOrdem.LIMITE, quantidade, preco)
         negocios = self._casar(ordem)
         if ordem.quantidade_restante > 0:
             self._livro.lado(lado).adicionar(ordem, preco)
+        self._reprecificar_pegged()
         return ResultadoEnvio(ordem, negocios)
 
     def enviar_ordem_a_mercado(self, lado: Lado, quantidade: int) -> ResultadoEnvio:
         self._validar_quantidade(quantidade)
-        ordem = Ordem(next(self._ids_ordem), lado, TipoOrdem.MERCADO, quantidade, None)
-        self._ordens[ordem.id] = ordem
+        ordem = self._nova_ordem(lado, TipoOrdem.MERCADO, quantidade, None)
         negocios = self._casar(ordem)
         if ordem.quantidade_restante > 0:
             ordem.cancelada = True
+        self._reprecificar_pegged()
         return ResultadoEnvio(ordem, negocios)
+
+    def enviar_ordem_pegged(
+        self, referencia: Referencia, lado: Lado, quantidade: int
+    ) -> ResultadoEnvio:
+        """Ordem cujo preço acompanha o bid (compra) ou o offer (venda).
+
+        Só são aceitas peg to the bid de compra e peg to the offer de venda: uma venda no bid
+        (ou compra no offer) cruzaria o livro na hora e seria, na prática, uma ordem a mercado.
+
+        A referência é o melhor preço entre as ordens limitadas do lado, não do livro todo;
+        senão a pegged acompanharia a si mesma. Sem referência no envio, a ordem é rejeitada.
+        Por ficar sempre no melhor preço do próprio lado, ela nunca cruza o livro: só executa
+        como passiva.
+        """
+        self._validar_quantidade(quantidade)
+        if referencia.lado is not lado:
+            raise ErroDeOrdem(
+                f"peg {referencia} só é aceita para {referencia.lado}: a {lado} cruzaria o livro"
+            )
+        preco = self._preco_de_referencia(lado)
+        if preco is None:
+            raise ErroDeOrdem(f"não há {referencia} no livro para acompanhar")
+        ordem = self._nova_ordem(lado, TipoOrdem.PEGGED, quantidade, preco, referencia)
+        self._livro.lado(lado).adicionar(ordem, preco)
+        return ResultadoEnvio(ordem, ())
 
     def cancelar_ordem(self, id_ordem: int) -> Ordem:
         ordem, preco = self._ordem_aberta(id_ordem)
         self._livro.lado(ordem.lado).remover(ordem, preco)
         ordem.cancelada = True
+        self._reprecificar_pegged()
         return ordem
 
     def alterar_ordem(
@@ -107,7 +150,7 @@ class MotorDeCasamento:
         """Altera preço, quantidade ou ambos de uma ordem aberta.
 
         `quantidade` é a nova quantidade em aberto (o que aparece no livro); o que já foi
-        executado não muda.
+        executado não muda. Ordens pegged só podem ter a quantidade alterada.
 
         Prioridade (mesma regra da B3 e da maioria das bolsas):
         - mudar o preço ou aumentar a quantidade faz a ordem perder a prioridade: ela vai para
@@ -123,6 +166,8 @@ class MotorDeCasamento:
         if quantidade is not None:
             self._validar_quantidade(quantidade)
         ordem, preco_atual = self._ordem_aberta(id_ordem)
+        if ordem.tipo is TipoOrdem.PEGGED and preco is not None:
+            raise ErroDeOrdem("ordem pegged segue a referência e não tem preço para alterar")
 
         novo_preco = preco_atual if preco is None else preco
         nova_restante = ordem.quantidade_restante if quantidade is None else quantidade
@@ -136,18 +181,72 @@ class MotorDeCasamento:
         lado_do_livro.remover(ordem, preco_atual)
         ordem.preco = novo_preco
         ordem.quantidade = ordem.quantidade_executada + nova_restante
+        ordem.prioridade = next(self._prioridades)
         negocios = self._casar(ordem)
         if ordem.quantidade_restante > 0:
             lado_do_livro.adicionar(ordem, novo_preco)
+        self._reprecificar_pegged()
         return ResultadoEnvio(ordem, negocios)
+
+    def _nova_ordem(
+        self,
+        lado: Lado,
+        tipo: TipoOrdem,
+        quantidade: int,
+        preco: Decimal | None,
+        referencia: Referencia | None = None,
+    ) -> Ordem:
+        ordem = Ordem(
+            id=next(self._ids_ordem),
+            lado=lado,
+            tipo=tipo,
+            quantidade=quantidade,
+            preco=preco,
+            prioridade=next(self._prioridades),
+            referencia=referencia,
+        )
+        self._ordens[ordem.id] = ordem
+        return ordem
 
     def _ordem_aberta(self, id_ordem: int) -> tuple[Ordem, Decimal]:
         ordem = self.ordem(id_ordem)
         if ordem.quantidade_restante == 0:
             raise ErroDeOrdem(f"ordem {id_ordem} não está aberta ({ordem.status})")
-        # Só ordens limitadas ficam abertas, então o preço existe.
+        # Ordens a mercado nunca ficam abertas, então o preço existe.
         assert ordem.preco is not None
         return ordem, ordem.preco
+
+    # --- pegged ---------------------------------------------------------------------------
+
+    def _preco_de_referencia(self, lado: Lado) -> Decimal | None:
+        """Melhor preço entre as ordens limitadas de um lado (bid na compra, offer na venda)."""
+        for ordem in self._livro.lado(lado).iterar():
+            if ordem.tipo is TipoOrdem.LIMITE:
+                return ordem.preco
+        return None
+
+    def _reprecificar_pegged(self) -> None:
+        """Leva cada ordem pegged ao preço atual da sua referência.
+
+        Roda ao fim de cada operação: uma ordem agressora executa contra o livro como ele
+        estava na chegada dela, e só depois as pegged se ajustam.
+
+        A pegged mantém a prioridade da chegada original (como no exemplo do enunciado, em que
+        ela fica à frente da limitada que criou o novo bid). Se a referência some (não há mais
+        ordens limitadas no lado), ela fica no último preço até surgir uma nova referência.
+        """
+        for lado in Lado:
+            referencia = self._preco_de_referencia(lado)
+            if referencia is None:
+                continue
+            lado_do_livro = self._livro.lado(lado)
+            pegged = [o for o in lado_do_livro.iterar() if o.tipo is TipoOrdem.PEGGED]
+            for ordem in pegged:
+                if ordem.preco != referencia:
+                    assert ordem.preco is not None
+                    lado_do_livro.remover(ordem, ordem.preco)
+                    ordem.preco = referencia
+                    lado_do_livro.adicionar(ordem, referencia)
 
     # --- consultas ------------------------------------------------------------------------
 
@@ -160,8 +259,8 @@ class MotorDeCasamento:
     def ordens_no_livro(self, lado: Lado) -> tuple[OrdemNoLivro, ...]:
         """Ordens abertas de um lado, na ordem em que seriam executadas."""
         return tuple(
-            OrdemNoLivro(o.id, o.preco, o.quantidade_restante)
-            for o in self._livro.lado(lado).ordens()
+            OrdemNoLivro(o.id, o.preco, o.quantidade_restante, o.referencia)
+            for o in self._livro.lado(lado).iterar()
             if o.preco is not None
         )
 

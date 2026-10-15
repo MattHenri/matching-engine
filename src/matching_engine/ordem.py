@@ -19,6 +19,19 @@ class Lado(StrEnum):
 class TipoOrdem(StrEnum):
     LIMITE = "limite"
     MERCADO = "mercado"
+    PEGGED = "pegged"
+
+
+class Referencia(StrEnum):
+    """Preço que uma ordem pegged acompanha."""
+
+    BID = "bid"  # melhor preço de compra
+    OFFER = "offer"  # melhor preço de venda
+
+    @property
+    def lado(self) -> Lado:
+        """Lado do livro de onde vem o preço de referência."""
+        return Lado.COMPRA if self is Referencia.BID else Lado.VENDA
 
 
 class StatusOrdem(StrEnum):
@@ -32,15 +45,18 @@ class StatusOrdem(StrEnum):
 class Ordem:
     """Ordem enviada ao motor.
 
-    O `id` é sequencial e não muda. A prioridade de tempo é a posição na fila do nível de
-    preço: em geral segue o `id`, mas uma ordem alterada pode ir para o fim da fila.
+    O `id` é sequencial e não muda. A prioridade de tempo dentro de um nível de preço vem de
+    `prioridade`: menor executa antes. Ela é dada na chegada e só muda quando uma alteração
+    faz a ordem perder a prioridade.
     """
 
     id: int
     lado: Lado
     tipo: TipoOrdem
     quantidade: int
-    preco: Decimal | None  # None em ordens a mercado
+    preco: Decimal | None  # None em ordens a mercado; nas pegged, muda com a referência
+    prioridade: int
+    referencia: Referencia | None = None  # só nas pegged
     quantidade_executada: int = 0
     cancelada: bool = False
 

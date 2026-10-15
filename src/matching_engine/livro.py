@@ -1,9 +1,9 @@
-"""Livro de ofertas: ordens limitadas que aguardam execução, agrupadas por nível de preço."""
+"""Livro de ofertas: ordens que aguardam execução, agrupadas por nível de preço."""
 
 from __future__ import annotations
 
 from bisect import insort
-from collections import deque
+from collections.abc import Iterator
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -17,15 +17,21 @@ class NivelDePreco:
     ordens: int
 
 
+def _por_prioridade(ordem: Ordem) -> int:
+    return ordem.prioridade
+
+
 class LadoDoLivro:
     """Um lado do livro (compra ou venda), com os níveis ordenados do melhor para o pior.
 
-    Cada nível guarda uma fila FIFO de ordens, o que dá a prioridade de tempo.
+    Cada nível guarda suas ordens ordenadas por `prioridade`, o que dá a prioridade de tempo.
+    Uma ordem nova tem a maior prioridade numérica e vai para o fim; uma pegged que muda de
+    preço mantém a sua e entra na posição correspondente à sua chegada.
     """
 
     def __init__(self, lado: Lado) -> None:
         self.lado = lado
-        self._niveis: dict[Decimal, deque[Ordem]] = {}
+        self._niveis: dict[Decimal, list[Ordem]] = {}
         self._precos: list[Decimal] = []  # do melhor para o pior
 
     def _chave(self, preco: Decimal) -> Decimal:
@@ -46,14 +52,14 @@ class LadoDoLivro:
     def adicionar(self, ordem: Ordem, preco: Decimal) -> None:
         fila = self._niveis.get(preco)
         if fila is None:
-            fila = self._niveis[preco] = deque()
+            fila = self._niveis[preco] = []
             insort(self._precos, preco, key=self._chave)
-        fila.append(ordem)
+        insort(fila, ordem, key=_por_prioridade)
 
     def remover_primeira(self) -> None:
         preco = self._precos[0]
         fila = self._niveis[preco]
-        fila.popleft()
+        fila.pop(0)
         if not fila:
             self._remover_nivel(preco)
 
@@ -67,9 +73,13 @@ class LadoDoLivro:
         del self._niveis[preco]
         self._precos.remove(preco)
 
+    def iterar(self) -> Iterator[Ordem]:
+        """Ordens do melhor preço para o pior e, em cada preço, por prioridade."""
+        for preco in self._precos:
+            yield from self._niveis[preco]
+
     def ordens(self) -> list[Ordem]:
-        """Todas as ordens, do melhor preço para o pior e, em cada preço, por chegada."""
-        return [ordem for preco in self._precos for ordem in self._niveis[preco]]
+        return list(self.iterar())
 
     def niveis(self) -> list[NivelDePreco]:
         return [

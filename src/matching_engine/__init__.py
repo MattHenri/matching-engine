@@ -8,7 +8,7 @@ from matching_engine.motor import (
     Profundidade,
     ResultadoEnvio,
 )
-from matching_engine.ordem import Lado, Negocio, Ordem, StatusOrdem, TipoOrdem
+from matching_engine.ordem import Lado, Negocio, Ordem, Referencia, StatusOrdem, TipoOrdem
 from matching_engine.visualizacao import visualizar_livro
 
 __all__ = [
@@ -20,6 +20,7 @@ __all__ = [
     "Ordem",
     "OrdemNoLivro",
     "Profundidade",
+    "Referencia",
     "ResultadoEnvio",
     "StatusOrdem",
     "TipoOrdem",

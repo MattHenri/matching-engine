@@ -89,6 +89,58 @@ def test_alterar_preco_que_cruza_mostra_os_trades() -> None:
     assert rodar(motor, "book")[2:] == ["70 @ 21             |"]
 
 
+def test_peg_exemplo_do_enunciado() -> None:
+    motor = MotorDeCasamento(ativo="TESTE")
+    rodar(motor, "limit buy 10 200")
+    rodar(motor, "limit buy 9.99 100")
+    rodar(motor, "limit sell 10.5 100")
+
+    assert rodar(motor, "peg bid buy 150") == [
+        "Order created: buy 150 @ 10 (peg bid) identificador_4"
+    ]
+    assert rodar(motor, "print book") == [
+        "Ordens de Compra    | Ordens de Venda",
+        "--------------------|-----------------",
+        "200 @ 10            | 100 @ 10.5",
+        "150 @ 10            |",
+        "100 @ 9.99          |",
+    ]
+
+    rodar(motor, "limit buy 10.1 300")
+    assert rodar(motor, "print book")[2:] == [
+        "150 @ 10.1          | 100 @ 10.5",
+        "300 @ 10.1          |",
+        "200 @ 10            |",
+        "100 @ 9.99          |",
+    ]
+
+
+def test_peg_offer() -> None:
+    motor = MotorDeCasamento(ativo="TESTE")
+    rodar(motor, "limit sell 10.5 100")
+    assert rodar(motor, "peg offer sell 30") == [
+        "Order created: sell 30 @ 10.5 (peg offer) identificador_2"
+    ]
+
+
+def test_peg_erros() -> None:
+    motor = MotorDeCasamento(ativo="TESTE")
+    assert rodar(motor, "peg bid buy 10") == ["erro: não há bid no livro para acompanhar"]
+    rodar(motor, "limit buy 10 100")
+    assert rodar(motor, "peg bid sell 10") == [
+        "erro: peg bid só é aceita para compra: a venda cruzaria o livro"
+    ]
+    assert rodar(motor, "peg bid buy") == ["erro: uso: peg <bid|offer> <buy|sell> <qty>"]
+    assert rodar(motor, "peg mid buy 10") == ["erro: uso: peg <bid|offer> <buy|sell> <qty>"]
+    rodar(motor, "peg bid buy 10")
+    assert rodar(motor, "change order 2 price 9") == [
+        "erro: ordem pegged segue a referência e não tem preço para alterar"
+    ]
+    assert rodar(motor, "change order 2 qty 5") == [
+        "Order changed: buy 5 @ 10 (peg bid) identificador_2"
+    ]
+
+
 def test_trades_e_aliases() -> None:
     motor = MotorDeCasamento(ativo="TESTE")
     assert rodar(motor, "trades") == ["nenhum negócio"]

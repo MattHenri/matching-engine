@@ -6,7 +6,14 @@ from decimal import Decimal
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from matching_engine import ErroDeOrdem, Lado, MotorDeCasamento, StatusOrdem
+from matching_engine import (
+    ErroDeOrdem,
+    Lado,
+    MotorDeCasamento,
+    Referencia,
+    StatusOrdem,
+    TipoOrdem,
+)
 
 lados = st.sampled_from(list(Lado))
 quantidades = st.integers(min_value=1, max_value=100)
@@ -19,9 +26,12 @@ operacoes = st.lists(
         st.tuples(st.just("mercado"), lados, quantidades),
         st.tuples(st.just("cancelar"), ids),
         st.tuples(st.just("alterar"), ids, st.none() | precos, st.none() | quantidades),
+        st.tuples(st.just("pegged"), lados, quantidades),
     ),
     max_size=60,
 )
+
+REFERENCIA_DO_LADO = {Lado.COMPRA: Referencia.BID, Lado.VENDA: Referencia.OFFER}
 
 
 def _aplicar(motor: MotorDeCasamento, op: tuple[object, ...]) -> None:
@@ -36,6 +46,18 @@ def _aplicar(motor: MotorDeCasamento, op: tuple[object, ...]) -> None:
         case ("alterar", int(id_ordem), Decimal() | None as preco, int() | None as qtd):
             with suppress(ErroDeOrdem):
                 motor.alterar_ordem(id_ordem, preco=preco, quantidade=qtd)
+        case ("pegged", Lado() as lado, int(qtd)):
+            with suppress(ErroDeOrdem):  # rejeitada quando não há referência
+                motor.enviar_ordem_pegged(REFERENCIA_DO_LADO[lado], lado, qtd)
+
+
+def _conferir_pegged(motor: MotorDeCasamento) -> None:
+    """Toda pegged está no melhor preço entre as limitadas do seu lado, se houver um."""
+    for lado in Lado:
+        no_livro = motor.ordens_no_livro(lado)
+        limitadas = [o.preco for o in no_livro if o.referencia is None]
+        if limitadas:
+            assert all(o.preco == limitadas[0] for o in no_livro if o.referencia is not None)
 
 
 @settings(max_examples=300)
@@ -51,12 +73,15 @@ def test_invariantes(ops: list[tuple[object, ...]]) -> None:
         if compra is not None and venda is not None:
             assert compra < venda
 
-        # Negócios desta operação respeitam o limite de preço das duas ordens. A conferência
-        # é feita na hora porque uma alteração posterior pode mudar o preço da ordem.
+        _conferir_pegged(motor)
+
+        # Negócios desta operação respeitam o limite de preço das ordens limitadas. A
+        # conferência é feita na hora porque uma alteração posterior pode mudar o preço da
+        # ordem. Pegged e a mercado não têm limite.
         for n in motor.negocios[negocios_antes:]:
             oc, ov = motor.ordem(n.id_ordem_compra), motor.ordem(n.id_ordem_venda)
-            assert oc.preco is None or n.preco <= oc.preco
-            assert ov.preco is None or n.preco >= ov.preco
+            assert oc.tipo is not TipoOrdem.LIMITE or oc.preco is None or n.preco <= oc.preco
+            assert ov.tipo is not TipoOrdem.LIMITE or ov.preco is None or n.preco >= ov.preco
 
     ordens = [motor.ordem(i) for i in range(1, len(motor._ordens) + 1)]
     negocios = motor.negocios

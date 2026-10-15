@@ -46,6 +46,30 @@ a nova quantidade **em aberto** (a que aparece no livro); o que já foi executad
 
 É a regra usada pela B3 e pela maioria das bolsas.
 
+### Ordem pegged
+
+Uma ordem pegged não tem preço fixo: ela acompanha o **bid** (melhor preço de compra) ou o
+**offer** (melhor preço de venda), e o motor atualiza o preço dela sempre que a referência
+muda.
+
+- **Só peg bid buy e peg offer sell.** Uma venda atrelada ao bid (ou compra atrelada ao offer)
+  cruzaria o livro na hora e seria, na prática, uma ordem a mercado; essas combinações são
+  rejeitadas.
+- **A referência é o melhor preço entre as ordens limit do lado**, não do livro todo. Se a
+  pegged contasse, ela acompanharia a si mesma (e outras pegged).
+- **Ao mudar de preço, a pegged mantém a prioridade da chegada original.** É o que o exemplo
+  do enunciado mostra: depois do `limit buy 10.1 300`, a pegged de 150 (que chegou antes)
+  fica na frente dela a 10.1. Para isso, cada nível ordena as ordens por um número de
+  prioridade dado na chegada, e não por uma fila simples.
+- **A reprecificação acontece ao fim de cada operação.** Uma ordem agressora executa contra o
+  livro como ele estava quando ela chegou; só depois as pegged se ajustam.
+- **Sem referência no envio, a ordem é rejeitada.** Se a referência some depois (não sobra
+  nenhuma limit no lado), a pegged fica no último preço até aparecer uma nova referência.
+- **Ela nunca agride o livro**: fica sempre no melhor preço do próprio lado, que é pior que o
+  melhor preço do outro. Executa só como passiva.
+- Só a quantidade pode ser alterada (o preço vem da referência), com a mesma regra de
+  prioridade das outras ordens.
+
 ## Uso
 
 ```bash
@@ -58,9 +82,11 @@ Comandos:
 ```
 limit <buy|sell> <price> <qty>                  ordem limitada
 market <buy|sell> <qty>                         ordem a mercado
+peg bid buy <qty>                               compra que acompanha o bid
+peg offer sell <qty>                            venda que acompanha o offer
 cancel order <id>                               cancela uma ordem aberta
 change order <id> [price <price>] [qty <qty>]   altera preço, quantidade ou ambos
-book                                            mostra o livro
+book (ou print book)                            mostra o livro
 trades                                          lista os negócios realizados
 help / exit
 ```
@@ -109,6 +135,27 @@ Ordens de Compra    | Ordens de Venda
 No `market buy 150`, a venda a 10.5 executa primeiro por ter o melhor preço, e entre as duas
 vendas a 20 a ordem 5 (que chegou antes) é preenchida antes da ordem 6.
 
+Ordem pegged (exemplo do enunciado):
+
+```
+>>> print book
+Ordens de Compra    | Ordens de Venda
+--------------------|-----------------
+200 @ 10            | 100 @ 10.5
+100 @ 9.99          |
+>>> peg bid buy 150
+Order created: buy 150 @ 10 (peg bid) identificador_4
+>>> limit buy 10.1 300
+Order created: buy 300 @ 10.1 identificador_5
+>>> print book
+Ordens de Compra    | Ordens de Venda
+--------------------|-----------------
+150 @ 10.1          | 100 @ 10.5
+300 @ 10.1          |
+200 @ 10            |
+100 @ 9.99          |
+```
+
 Como biblioteca:
 
 ```python
@@ -126,9 +173,10 @@ motor.cancelar_ordem(venda.id)
 
 ## Estrutura
 
-- `ordem.py`: `Lado`, `Ordem`, `Negocio` e status.
-- `livro.py`: livro de ofertas; níveis de preço ordenados, cada um com uma fila FIFO.
-- `motor.py`: validação, casamento, alteração e cancelamento.
+- `ordem.py`: `Lado`, `TipoOrdem`, `Referencia`, `Ordem`, `Negocio` e status.
+- `livro.py`: livro de ofertas; níveis de preço ordenados, cada um com as ordens ordenadas
+  por prioridade de chegada.
+- `motor.py`: validação, casamento, ordens pegged, alteração e cancelamento.
 - `visualizacao.py`: `visualizar_livro`, o livro em duas colunas, uma ordem por linha.
 - `cli.py`: terminal interativo.
 
