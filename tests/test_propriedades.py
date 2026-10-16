@@ -1,4 +1,8 @@
-"""Invariantes do motor sob sequências aleatórias de ordens, alterações e cancelamentos."""
+"""Testes com sequências aleatórias de operações (Hypothesis).
+
+O Hypothesis gera várias listas de operações e, depois de cada uma, a gente confere regras
+que nunca podem ser quebradas, como "o livro nunca fica cruzado".
+"""
 
 from contextlib import suppress
 from decimal import Decimal
@@ -6,110 +10,85 @@ from decimal import Decimal
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from matching_engine import (
-    ErroDeOrdem,
-    Lado,
-    MotorDeCasamento,
-    Referencia,
-    StatusOrdem,
-    TipoOrdem,
-)
+from matching_engine import ErroDeOrdem, MotorDeCasamento
 
-lados = st.sampled_from(list(Lado))
+lados = st.sampled_from(["buy", "sell"])
 quantidades = st.integers(min_value=1, max_value=100)
 precos = st.integers(min_value=990, max_value=1010).map(lambda c: Decimal(c) / 100)
 ids = st.integers(min_value=1, max_value=60)
 
 operacoes = st.lists(
     st.one_of(
-        st.tuples(st.just("limitada"), lados, quantidades, precos),
-        st.tuples(st.just("mercado"), lados, quantidades),
-        st.tuples(st.just("cancelar"), ids),
-        st.tuples(st.just("alterar"), ids, st.none() | precos, st.none() | quantidades),
-        st.tuples(st.just("pegged"), lados, quantidades),
+        st.tuples(st.just("limit"), lados, quantidades, precos),
+        st.tuples(st.just("market"), lados, quantidades),
+        st.tuples(st.just("cancel"), ids),
+        st.tuples(st.just("change"), ids, st.none() | precos, st.none() | quantidades),
+        st.tuples(st.just("peg"), lados, quantidades),
     ),
     max_size=60,
 )
 
-REFERENCIA_DO_LADO = {Lado.COMPRA: Referencia.BID, Lado.VENDA: Referencia.OFFER}
 
-
-def _aplicar(motor: MotorDeCasamento, op: tuple[object, ...]) -> None:
-    match op:
-        case ("limitada", Lado() as lado, int(qtd), Decimal() as preco):
-            motor.enviar_ordem_limitada(lado, qtd, preco)
-        case ("mercado", Lado() as lado, int(qtd)):
-            motor.enviar_ordem_a_mercado(lado, qtd)
-        case ("cancelar", int(id_ordem)):
-            with suppress(ErroDeOrdem):
-                motor.cancelar_ordem(id_ordem)
-        case ("alterar", int(id_ordem), Decimal() | None as preco, int() | None as qtd):
-            with suppress(ErroDeOrdem):
-                motor.alterar_ordem(id_ordem, preco=preco, quantidade=qtd)
-        case ("pegged", Lado() as lado, int(qtd)):
-            with suppress(ErroDeOrdem):  # rejeitada quando não há referência
-                motor.enviar_ordem_pegged(REFERENCIA_DO_LADO[lado], lado, qtd)
-
-
-def _conferir_pegged(motor: MotorDeCasamento) -> None:
-    """Toda pegged está no melhor preço entre as limitadas do seu lado, se houver um."""
-    for lado in Lado:
-        no_livro = motor.ordens_no_livro(lado)
-        limitadas = [o.preco for o in no_livro if o.referencia is None]
-        if limitadas:
-            assert all(o.preco == limitadas[0] for o in no_livro if o.referencia is not None)
+def aplicar(motor: MotorDeCasamento, op: tuple[object, ...]) -> None:
+    # suppress ignora o erro quando a operação é inválida (ex.: cancelar uma ordem que não existe)
+    with suppress(ErroDeOrdem):
+        match op:
+            case ("limit", str(lado), int(qtd), Decimal() as preco):
+                motor.enviar_limit(lado, qtd, preco)
+            case ("market", str(lado), int(qtd)):
+                motor.enviar_market(lado, qtd)
+            case ("cancel", int(id_ordem)):
+                motor.cancelar(id_ordem)
+            case ("change", int(id_ordem), Decimal() | None as preco, int() | None as qtd):
+                motor.alterar(id_ordem, preco, qtd)
+            case ("peg", str(lado), int(qtd)):
+                motor.enviar_peg("bid" if lado == "buy" else "offer", lado, qtd)
 
 
 @settings(max_examples=300)
 @given(operacoes)
-def test_invariantes(ops: list[tuple[object, ...]]) -> None:
-    motor = MotorDeCasamento(ativo="TESTE")
+def test_regras_que_nunca_podem_quebrar(ops: list[tuple[object, ...]]) -> None:
+    motor = MotorDeCasamento()
+
     for op in ops:
         negocios_antes = len(motor.negocios)
-        _aplicar(motor, op)
+        aplicar(motor, op)
 
-        # O livro nunca fica cruzado.
+        # o livro nunca fica cruzado (melhor compra sempre menor que a melhor venda)
         compra, venda = motor.melhor_compra(), motor.melhor_venda()
         if compra is not None and venda is not None:
             assert compra < venda
 
-        _conferir_pegged(motor)
+        # toda peg está no preço da melhor limit do lado dela (se existir uma)
+        for lado in (motor.compras, motor.vendas):
+            limits = [o.preco for o in lado if o.tipo == "limit"]
+            if limits:
+                assert all(o.preco == limits[0] for o in lado if o.tipo == "peg")
 
-        # Negócios desta operação respeitam o limite de preço das ordens limitadas. A
-        # conferência é feita na hora porque uma alteração posterior pode mudar o preço da
-        # ordem. Pegged e a mercado não têm limite.
+        # os negócios desta operação respeitam o preço limite das ordens limit
+        # (confere na hora porque um change depois pode mudar o preço da ordem)
         for n in motor.negocios[negocios_antes:]:
-            oc, ov = motor.ordem(n.id_ordem_compra), motor.ordem(n.id_ordem_venda)
-            assert oc.tipo is not TipoOrdem.LIMITE or oc.preco is None or n.preco <= oc.preco
-            assert ov.tipo is not TipoOrdem.LIMITE or ov.preco is None or n.preco >= ov.preco
+            c, v = motor.ordens[n.id_compra], motor.ordens[n.id_venda]
+            assert c.tipo != "limit" or n.preco <= c.preco
+            assert v.tipo != "limit" or n.preco >= v.preco
 
-    ordens = [motor.ordem(i) for i in range(1, len(motor._ordens) + 1)]
-    negocios = motor.negocios
+    ordens = list(motor.ordens.values())
 
-    # Quantidade negociada bate dos dois lados e com a soma dos negócios.
-    total = sum(n.quantidade for n in negocios)
-    assert sum(o.quantidade_executada for o in ordens if o.lado is Lado.COMPRA) == total
-    assert sum(o.quantidade_executada for o in ordens if o.lado is Lado.VENDA) == total
+    # a quantidade negociada é igual dos dois lados e igual à soma dos negócios
+    total = sum(n.quantidade for n in motor.negocios)
+    assert sum(o.executada for o in ordens if o.lado == "buy") == total
+    assert sum(o.executada for o in ordens if o.lado == "sell") == total
 
-    # Nenhuma ordem executa mais que sua quantidade.
-    assert all(0 <= o.quantidade_executada <= o.quantidade for o in ordens)
+    # nenhuma ordem executa mais do que a quantidade dela
+    assert all(0 <= o.executada <= o.quantidade for o in ordens)
 
-    # O livro contém exatamente as ordens abertas, cada uma uma vez, com o restante delas.
-    abertas = {
-        o.id: o.quantidade_restante
-        for o in ordens
-        if o.status in (StatusOrdem.ABERTA, StatusOrdem.PARCIALMENTE_EXECUTADA)
-    }
-    no_livro = motor.ordens_no_livro(Lado.COMPRA) + motor.ordens_no_livro(Lado.VENDA)
-    assert len(no_livro) == len(abertas)
-    assert {o.id: o.quantidade for o in no_livro} == abertas
+    # o livro tem exatamente as ordens abertas, cada uma uma vez só
+    abertas = sorted(o.id for o in ordens if o.status in ("aberta", "parcial"))
+    no_livro = sorted(o.id for o in motor.compras + motor.vendas)
+    assert no_livro == abertas
 
-    # A visão por ordem e a visão por nível concordam.
-    prof = motor.profundidade()
-    assert sum(n.quantidade for n in prof.compras + prof.vendas) == sum(abertas.values())
-
-    # Cada lado está ordenado do melhor preço para o pior.
-    precos_compra = [o.preco for o in motor.ordens_no_livro(Lado.COMPRA)]
-    precos_venda = [o.preco for o in motor.ordens_no_livro(Lado.VENDA)]
+    # cada lado está ordenado do melhor preço pro pior
+    precos_compra = [o.preco for o in motor.compras]
+    precos_venda = [o.preco for o in motor.vendas]
     assert precos_compra == sorted(precos_compra, reverse=True)
     assert precos_venda == sorted(precos_venda)

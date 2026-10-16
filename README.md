@@ -59,8 +59,8 @@ muda.
   pegged contasse, ela acompanharia a si mesma (e outras pegged).
 - **Ao mudar de preço, a pegged mantém a prioridade da chegada original.** É o que o exemplo
   do enunciado mostra: depois do `limit buy 10.1 300`, a pegged de 150 (que chegou antes)
-  fica na frente dela a 10.1. Para isso, cada nível ordena as ordens por um número de
-  prioridade dado na chegada, e não por uma fila simples.
+  fica na frente dela a 10.1. Para isso, cada lado do livro é ordenado por preço e, no
+  mesmo preço, por um número de prioridade dado na chegada.
 - **A reprecificação acontece ao fim de cada operação.** Uma ordem agressora executa contra o
   livro como ele estava quando ela chegou; só depois as pegged se ajustam.
 - **Sem referência no envio, a ordem é rejeitada.** Se a referência some depois (não sobra
@@ -160,25 +160,26 @@ Como biblioteca:
 
 ```python
 from decimal import Decimal
-from matching_engine import Lado, MotorDeCasamento, TipoOrdem, visualizar_livro
+from matching_engine import MotorDeCasamento
+from matching_engine.cli import mostrar_livro
 
-motor = MotorDeCasamento(ativo="PETR4")
-venda = motor.enviar_ordem(TipoOrdem.LIMITE, Lado.VENDA, 100, Decimal("38.50")).ordem
-resultado = motor.enviar_ordem(TipoOrdem.MERCADO, Lado.COMPRA, 40)
-print(resultado.negocios)
-motor.alterar_ordem(venda.id, preco=Decimal("38.40"), quantidade=80)
-print(visualizar_livro(motor))
-motor.cancelar_ordem(venda.id)
+motor = MotorDeCasamento()
+venda, _ = motor.enviar_limit("sell", 100, Decimal("38.50"))
+compra, negocios = motor.enviar_market("buy", 40)
+print(negocios)
+motor.alterar(venda.id, preco=Decimal("38.40"), quantidade=80)
+print(mostrar_livro(motor))
+motor.cancelar(venda.id)
 ```
 
 ## Estrutura
 
-- `ordem.py`: `Lado`, `TipoOrdem`, `Referencia`, `Ordem`, `Negocio` e status.
-- `livro.py`: livro de ofertas; níveis de preço ordenados, cada um com as ordens ordenadas
-  por prioridade de chegada.
-- `motor.py`: validação, casamento, ordens pegged, alteração e cancelamento.
-- `visualizacao.py`: `visualizar_livro`, o livro em duas colunas, uma ordem por linha.
-- `cli.py`: terminal interativo.
+- `ordem.py`: as classes `Ordem` e `Negocio`, que só guardam dados.
+- `motor.py`: as regras. O livro são duas listas (`compras` e `vendas`), sempre ordenadas
+  por preço e, no mesmo preço, por ordem de chegada. Aqui ficam a validação, o casamento,
+  as ordens peg, a alteração e o cancelamento.
+- `cli.py`: o terminal. Lê os comandos, chama o motor e formata a resposta, incluindo a
+  tabela do livro (`mostrar_livro`).
 
 ## Desenvolvimento
 

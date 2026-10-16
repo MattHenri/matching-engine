@@ -36,10 +36,11 @@ ignore = [
     "RUF001", "RUF002", "RUF003",  # acentos do português são intencionais
     "PLR2004",                     # números mágicos são comuns em testes
     "N818",                        # exceções com nome em português (ErroDeOrdem)
+    "PLR0911", "PLR0912",          # o tratamento dos comandos é uma sequência de ifs de propósito
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["ANN"]
+"tests/**" = ["ANN", "N817"]       # N817: Decimal as D deixa os testes mais curtos
 
 [tool.mypy]
 python_version = "3.12"
