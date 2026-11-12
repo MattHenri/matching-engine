@@ -1,5 +1,15 @@
 # matching-engine
 
+> 🇧🇷 Português abaixo · 🇺🇸 English summary
+
+**In English:** a single-asset, in-memory order matching engine in Python. It matches orders by **price-time priority** (best price first; at the same price, earliest arrival first) and trades at the resting order's price. It supports **limit**, **market** and **pegged** orders (pegged orders track the best bid or offer and reprice after every operation while keeping their arrival priority), plus order **amendment** and **cancellation** through an interactive CLI.
+
+Amendment follows the rules used by B3 and most exchanges: changing the price or increasing the size loses queue priority, reducing the size keeps it. A limit order whose price crosses the book is executed rather than rested, so the book is never crossed; this invariant is checked by property-based tests (Hypothesis). Prices use `Decimal`, and the code is checked with `mypy --strict`, `ruff` and `pytest` in CI.
+
+Run it with `uv sync && uv run matching-engine`. The rest of this README is in Portuguese.
+
+---
+
 Matching engine simples para um único ativo. Tudo fica em memória: ordens, livro e negócios
 somem quando o processo termina.
 
